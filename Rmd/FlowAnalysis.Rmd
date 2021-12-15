@@ -1,0 +1,310 @@
+---
+title: "Analysis of Dual-Colour Ssd1 reporters"
+author: "Edward Wallace"
+date: "14/12/2021"
+output: 
+  html_document:
+    toc: true
+---
+
+# Summary
+
+We set out to test the effect of Ssd1-binding motifs in 5'UTRs on reporter gene translation in wild-type and ∆ssd1 cells. Our reporter was a mTurquoise2 fluorescent protein, detected in the AmCyan channel. We had a fluorescent reference protein mCherry, detected in the PE-Cy5 channel.
+
+These results are analysed by Edward Wallace on 14th December 2021.
+
+They show that the data are highly reproducible across 3 biological replicates. Indeed we see that 2 Ssd1 motifs result in a Ssd1-dependent repression of translation. The effect size is small (15% reduction), but statistically significant.
+
+### Load packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, messages = FALSE, warning = FALSE)
+library(tidyverse)
+library(cowplot)
+theme_set(theme_cowplot(font_size = 12) +
+            theme(strip.background = element_blank()))
+library(flowCore)
+```
+
+### Define functions to load flow cytometry data, using FlowCore package
+
+```{r functions_load}
+repair_flow_colnames <- function(string) {
+  string %>%
+    stringr::str_replace_all(" ", "") %>%
+    stringr::str_replace_all("PE-", "PE") %>%
+    stringr::str_replace_all("-", "_")
+}
+
+read_fcs_tibble <- function(file,...) {
+  read.FCS(file,...) %>%
+    .@exprs %>%
+    as_tibble %>%
+    set_names(repair_flow_colnames(names(.)))
+}
+
+```
+
+
+```{r test_readFCS, eval = FALSE, include = FALSE}
+
+flowf <- read.FCS(paste(datadir,"Specimen_001__yRB034a_003.fcs", sep = "/"))
+
+flowf
+
+flowf@parameters@data
+```
+
+
+## Pilot analysis comparing one pair of samples, replicate a for tandem motif
+
+```{r load_repa_tandem}
+datadir <- "/Volumes/biology/groups/wallace_rna/data/2021/12_Dec/Edward/2021-12-14_EW_yeast_mtu2_mch"
+
+flowdata_WT_2_a <- paste(datadir,"Specimen_001__yRB037a_005.fcs", sep = "/") %>%
+  read_fcs_tibble
+
+flowdata_dS_2_a <- paste(datadir,"Specimen_001__yRB040a_007.fcs", sep = "/") %>%
+  read_fcs_tibble
+```
+
+### Plot AmCyan (mTurq2) and (mCherry) separately, as well as the ratio
+
+This shows that the reporter gene expression differs but the reference gene expression is constant.
+
+Note in this analysis we did not gate, we are taking all of the data.
+
+```{r plot_repa_density, fig.height = 1.5, fig.width = 4}
+ggplot(data = flowdata_WT_2_a, aes(x = AmCyan_A)) + 
+  geom_density(data = flowdata_WT_2_a, aes(colour = "wild-type")) +
+  geom_density(data = flowdata_dS_2_a, aes(colour = "∆ssd1")) +
+  scale_x_log10(limits = c(20, 20000))
+
+ggplot(data = flowdata_WT_2_a, aes(x = PECy5_A)) + 
+  geom_density(data = flowdata_WT_2_a, aes(colour = "wild-type")) +
+  geom_density(data = flowdata_dS_2_a, aes(colour = "∆ssd1")) +
+  scale_x_log10(limits = c(200, 200000))
+
+ggplot(data = flowdata_WT_2_a, aes(x = AmCyan_A/PECy5_A)) + 
+  geom_density(data = flowdata_WT_2_a, aes(colour = "wild-type")) +
+  geom_density(data = flowdata_dS_2_a, aes(colour = "∆ssd1")) +
+  scale_x_log10(limits = c(0.05,1))
+```
+
+### Plot AmCyan (mTurq2) and (mCherry) together
+
+This shows that there is more blue:red in the ∆ssd1 samples in this replicated, as predicted
+
+```{r plot_repa_bluevsred, fig.height = 4, fig.width = 5}
+ggplot(data = flowdata_WT_2_a, aes(x = PECy5_A, y = AmCyan_A)) + 
+  geom_density_2d(data = flowdata_WT_2_a, aes(colour = "wild-type")) +
+  geom_density_2d(data = flowdata_dS_2_a, aes(colour = "∆ssd1")) +
+  scale_x_log10(limits = c(1000, 50000)) + scale_y_log10(limits = c(200, 10000))
+
+```
+
+## Comparative analysis across all 3 replicates
+
+### Describe the data
+
+First we load the sample sheet, that describes the sample contents and filenames.
+
+```{r load_samplesheet}
+datadir <- "/Volumes/biology/groups/wallace_rna/data/2021/12_Dec/Edward/2021-12-14_EW_yeast_mtu2_mch"
+
+samplesheet <- readxl::read_excel("../data/StrainsForFlowCytometry_14_12_2021.xlsx") %>%
+  select(SampleLabel, Background, MotifCount, Replicate, Filename) %>%
+  mutate(MotifCount = factor(MotifCount, levels = c("0","1","2")),
+         Ssd1Status = factor(Background, 
+                              levels = c("BY4741", "ssd1D"),
+                                labels = c("wild-type","∆ssd1")))
+
+samplesheet
+```
+
+### Load all the data
+
+Next we load the data from all those files.
+
+This code chunk takes about 1 minute to run as there is so much data.
+
+```{r load_all_data}
+flow_data_all <- samplesheet %>%
+  group_by(SampleLabel, Ssd1Status, MotifCount, Replicate, Filename) %>%
+  do( read_fcs_tibble(paste(datadir, .$Filename[1], sep = "/")) )
+
+flow_data_gated <- flow_data_all %>%
+  dplyr::filter(FSC_W > 60000, FSC_W < 100000, 
+                FSC_A > 35000, FSC_A < 225000)
+```
+
+Here, `flow_data_gated` is gated for singlet cells by forward scatter width and area.
+
+## Gated data contain roughly 100,000 singlet cells per sample:
+
+```{r inspect_flow_data}
+flow_data_all
+
+left_join(flow_data_all %>%
+            group_by(SampleLabel) %>%
+            tally(),
+          flow_data_gated %>%
+            group_by(SampleLabel) %>%
+            tally(),
+          by = "SampleLabel",
+          suffix = c("_all", "_gated") )
+```
+
+### Summarise distribution in blue and red channels separately
+
+```{r amcyan_by_sample, fig.height=2.5, fig.width = 4}
+ggplot(data = flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), MotifCount == 2, Replicate %in% c("a","b","c")),
+       aes(x = Ssd1Status, y = AmCyan_A, colour = Replicate)) +
+  geom_boxplot() + 
+  scale_y_log10()
+  
+ggplot(data = flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), Replicate %in% c("a","b","c")),
+       aes(x = MotifCount, y = AmCyan_A, colour = Replicate)) +
+  geom_boxplot(outlier.color = NA) + 
+  facet_wrap(~Ssd1Status, nrow = 1) +
+  scale_y_log10(limits = c(100,10000)) +
+  theme(panel.grid.major.y = element_line(size = 0.5, colour = "grey50"))
+```
+
+### Summarise distribution of blue to red ratio
+
+```{r BRratio_by_sample, fig.height=2.5, fig.width = 4}
+ggplot(data = flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), Replicate %in% c("a","b","c")),
+       aes(x = MotifCount, y = AmCyan_A/PECy5_A , colour = Replicate)) +
+  geom_boxplot(outlier.color = NA) + 
+  facet_wrap(~Ssd1Status, nrow = 1) +
+  scale_y_log10(limits = c(0.05,0.8)) +
+  theme(panel.grid.major.y = element_line(size = 0.5, colour = "grey50"))
+```
+
+### Blue to red ratio shows that Ssd1 motifs repress translation only in wild-type cells
+
+Estimate median blue:red ratio for WT 0 motifs and use to normalise all other ratios. This enables easier visual comparision of how different the ratios are between different samples.
+
+```{r BRratio_norm_by_sample, fig.height=2.5, fig.width = 3.5}
+# Estimate median blue:red ratio for WT 0 motifs and use to normalise
+medratio_WT_0 <- 
+  flow_data_gated %>% 
+         dplyr::filter(Ssd1Status == "wild-type", 
+                MotifCount == 0, 
+                Replicate %in% c("a","b","c")) %>%
+  mutate(BRratio = AmCyan_A/PECy5_A) %>%
+  pull(BRratio) %>%
+  median()
+
+ggplot(data = flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), Replicate %in% c("a","b","c")),
+       aes(x = MotifCount, 
+           y = AmCyan_A/PECy5_A /medratio_WT_0, 
+           colour = MotifCount,
+           group = interaction(MotifCount,Replicate))
+       ) +
+  geom_boxplot(outlier.color = NA) + 
+  facet_wrap(~Ssd1Status, nrow = 1) +
+  labs(x = "Number of Ssd1 motifs in 5'UTR") +
+  scale_colour_manual(values = c("grey20","navy","purple3")) + 
+  scale_y_log10("mTurquoise2::mCherry\n normalised ratio",
+    limits = c(0.3, 2.1), breaks = c(0.25,0.5,1,2,4), expand = c(0,0)) +
+  theme(panel.grid.major.y = element_line(size = 0.5, colour = "grey50"),
+        legend.position = "none")
+```
+
+This figure shows that
+
+### Median summaries of key read-outs for each sample
+
+This gives the numbers behind the visualisations above.
+
+```{r BRratio_sum_bystrain, fig.height=3, fig.width = 5}
+flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), Replicate %in% c("a","b","c")) %>%
+  group_by(Ssd1Status,MotifCount) %>%
+  summarise(
+    FSC_A = median(FSC_A),
+    AmCyan_A = median(AmCyan_A),
+    PECy5_A  = median(PECy5_A),
+    BRratio  = median(AmCyan_A/PECy5_A /medratio_WT_0)
+  )
+```
+
+## Linear models show that all relevant differences are highly significant by t-test 
+
+```{r BRratio_regression}
+fit_Strain_2motifs <- 
+  lm(log2BR ~ Ssd1Status,
+  data = 
+    flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), 
+                       Replicate %in% c("a","b","c"),
+                       MotifCount == 2) %>%
+    dplyr::mutate(log2BR = log2(AmCyan_A/PECy5_A)) %>%
+    dplyr::filter(is.finite(log2BR))
+   )
+summary(fit_Strain_2motifs)
+
+fit_Strain_1motifs <- 
+  lm(log2BR ~ Ssd1Status,
+  data = 
+    flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), 
+                       Replicate %in% c("a","b","c"),
+                       MotifCount == 1) %>%
+    dplyr::mutate(log2BR = log2(AmCyan_A/PECy5_A)) %>%
+    dplyr::filter(is.finite(log2BR))
+   )
+summary(fit_Strain_1motifs)
+
+fit_Strain_0motifs <- 
+  lm(log2BR ~ Ssd1Status,
+  data = 
+    flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), 
+                       Replicate %in% c("a","b","c"),
+                       MotifCount == 0) %>%
+    dplyr::mutate(log2BR = log2(AmCyan_A/PECy5_A)) %>%
+    dplyr::filter(is.finite(log2BR))
+   )
+summary(fit_Strain_0motifs)
+
+fit_S2motifs_WT <- 
+  lm(log2BR ~ MotifCount,
+  data = 
+    flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), 
+                       Replicate %in% c("a","b","c"),
+                       MotifCount %in% c(0,2),
+                       Ssd1Status == "wild-type") %>%
+    dplyr::mutate(log2BR = log2(AmCyan_A/PECy5_A)) %>%
+    dplyr::filter(is.finite(log2BR))
+   )
+summary(fit_S2motifs_WT)
+
+fit_S2motifs_dS <- 
+  lm(log2BR ~ MotifCount,
+  data = 
+    flow_data_gated %>% 
+         dplyr::filter(!is.na(MotifCount), 
+                       Replicate %in% c("a","b","c"),
+                       MotifCount %in% c(0,2),
+                       Ssd1Status == "∆ssd1") %>%
+    dplyr::mutate(log2BR = log2(AmCyan_A/PECy5_A)) %>%
+    dplyr::filter(is.finite(log2BR))
+   )
+summary(fit_S2motifs_dS)
+```
+
+These analyses say that, in wild-type there is 28% less (normalised) mTu2 with 2 motifs than 0 motifs, and the difference is only 3% in the ∆ssd1 strain. Also there is about 15% less mTu2 in ∆ssd1 than in wild-type, of the construct with 2 motifs. All these differences are highly statistically significant in a t-test, because there are so many cells.
+
+## To do
+
+- check the repeated samples look reproducible
+- double-check the gating strategy
+- subset by cell size and shape (proxy for budded/unbudded)
